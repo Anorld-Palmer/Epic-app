@@ -1,0 +1,902 @@
+name: Build EPIC Android
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK packages
+        run: |
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Generate Android project
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_PUBLISHABLE_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -n "$SUPABASE_URL" || {
+            echo "Missing GitHub secret: SUPABASE_URL"
+            exit 1
+          }
+
+          test -n "$SUPABASE_KEY" || {
+            echo "Missing GitHub secret: SUPABASE_PUBLISHABLE_KEY"
+            exit 1
+          }
+
+          mkdir -p app/src/main/java/com/epic/social
+          mkdir -p app/src/main/assets
+
+          cat > settings.gradle <<'EOF'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+
+          rootProject.name = "EPIC"
+          include(":app")
+          EOF
+
+          cat > build.gradle <<'EOF'
+          plugins {
+              id "com.android.application" version "8.7.3" apply false
+          }
+          EOF
+
+          cat > app/build.gradle <<'EOF'
+          plugins {
+              id "com.android.application"
+          }
+
+          android {
+              namespace "com.epic.social"
+              compileSdk 35
+
+              defaultConfig {
+                  applicationId "com.epic.social"
+                  minSdk 23
+                  targetSdk 35
+                  versionCode 1
+                  versionName "1.0"
+              }
+
+              buildTypes {
+                  debug {
+                      minifyEnabled false
+                  }
+                  release {
+                      minifyEnabled false
+                  }
+              }
+          }
+          EOF
+
+          cat > app/src/main/AndroidManifest.xml <<'EOF'
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.INTERNET"/>
+
+              <application
+                  android:label="EPIC"
+                  android:theme="@android:style/Theme.Material.Light.NoActionBar"
+                  android:usesCleartextTraffic="false">
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true">
+
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN"/>
+                          <category android:name="android.intent.category.LAUNCHER"/>
+                      </intent-filter>
+
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+
+          cat > app/src/main/java/com/epic/social/MainActivity.java <<'EOF'
+          package com.epic.social;
+
+          import android.app.Activity;
+          import android.os.Bundle;
+          import android.webkit.WebView;
+          import android.webkit.WebSettings;
+          import android.webkit.WebViewClient;
+
+          public class MainActivity extends Activity {
+              private WebView webView;
+
+              @Override
+              protected void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+
+                  webView = new WebView(this);
+
+                  WebSettings settings = webView.getSettings();
+                  settings.setJavaScriptEnabled(true);
+                  settings.setDomStorageEnabled(true);
+
+                  webView.setWebViewClient(new WebViewClient());
+                  setContentView(webView);
+
+                  webView.loadUrl("file:///android_asset/index.html");
+              }
+
+              @Override
+              public void onBackPressed() {
+                  if (webView != null && webView.canGoBack()) {
+                      webView.goBack();
+                  } else {
+                      super.onBackPressed();
+                  }
+              }
+          }
+          EOF
+
+          cat > app/src/main/assets/index.html <<'HTML'
+          <!DOCTYPE html>
+          <html lang="en">
+          <head>
+          <meta charset="UTF-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <meta name="theme-color" content="#ffffff">
+          <title>EPIC</title>
+
+          <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+
+          <style>
+          *{box-sizing:border-box}
+          body{margin:0;background:#f0f2f5;color:#1c1e21;font-family:Arial,sans-serif}
+          button,input,textarea{font:inherit}
+          button{cursor:pointer;border:0;border-radius:8px;padding:11px;background:#e4e6eb;color:#1c1e21}
+          input,textarea{display:block;width:100%;padding:12px;border:1px solid #ccd0d5;border-radius:8px;margin:8px 0}
+          .header{position:sticky;top:0;background:white;padding:10px 14px;z-index:5;border-bottom:1px solid #ddd}
+          .brand{font-size:30px;font-weight:bold;color:#1877f2}
+          .row{display:flex;align-items:center;gap:9px}
+          .between{justify-content:space-between}
+          .circle{width:40px;height:40px;border-radius:50%;font-size:20px}
+          .tabs{position:sticky;top:59px;z-index:4;background:white;display:flex;border-bottom:1px solid #ddd}
+          .tab{flex:1;border-radius:0;background:white;font-size:20px;padding:13px 0}
+          .tab.active{color:#1877f2;border-bottom:3px solid #1877f2}
+          .page{max-width:650px;padding:12px;margin:auto}
+          .card{background:white;border-radius:12px;padding:14px;margin-bottom:12px;box-shadow:0 1px 2px #00000012}
+          .avatar{width:42px;height:42px;flex-shrink:0;border-radius:50%;background:#dbeafe;color:#1877f2;display:flex;align-items:center;justify-content:center;font-weight:bold}
+          .muted{color:#65676b;font-size:13px}
+          .blue{background:#1877f2;color:white}
+          .full{width:100%;margin-top:8px}
+          .actions{display:flex;gap:5px;border-top:1px solid #ddd;margin-top:12px;padding-top:10px}
+          .actions button{flex:1;background:white}
+          .hidden{display:none!important}
+          .stories{display:flex;gap:9px;overflow-x:auto}
+          .story{min-width:100px;height:130px;border-radius:12px;background:#dbeafe;display:flex;align-items:end;justify-content:center;padding:10px;color:#174ea6;font-weight:bold}
+          .error{color:#b42318;overflow-wrap:anywhere}
+          .posttext{white-space:pre-wrap;overflow-wrap:anywhere;margin-top:12px}
+          .title{font-size:19px;font-weight:bold;margin:8px 0 12px}
+          </style>
+          </head>
+
+          <body>
+          <section id="auth" class="page">
+            <div class="card" style="margin-top:40px;text-align:center">
+              <div class="brand">epic</div>
+              <p>Your world. Your people.</p>
+              <input id="email" type="email" autocomplete="email" placeholder="Email address">
+              <input id="password" type="password" autocomplete="current-password" placeholder="Password">
+              <input id="username" autocomplete="username" placeholder="Username for registration">
+              <button class="blue full" onclick="login()">Log in</button>
+              <button class="full" onclick="register()">Create account</button>
+              <p id="authmsg" class="muted"></p>
+            </div>
+          </section>
+
+          <section id="app" class="hidden">
+            <header class="header">
+              <div class="row between">
+                <span class="brand">epic</span>
+                <div class="row">
+                  <button class="circle" onclick="navigate('Create')">＋</button>
+                  <button class="circle" onclick="navigate('Search')">⌕</button>
+                  <button class="circle" onclick="navigate('Profile')">☰</button>
+                </div>
+              </div>
+            </header>
+
+            <nav class="tabs">
+              <button class="tab active" data-page="Home" onclick="navigate('Home')">⌂</button>
+              <button class="tab" data-page="Friends" onclick="navigate('Friends')">♧</button>
+              <button class="tab" data-page="Messenger" onclick="navigate('Messenger')">✉</button>
+              <button class="tab" data-page="Reels" onclick="navigate('Reels')">▶</button>
+              <button class="tab" data-page="Notifications" onclick="navigate('Notifications')">♧</button>
+              <button class="tab" data-page="Marketplace" onclick="navigate('Marketplace')">▣</button>
+            </nav>
+
+            <main id="content" class="page"></main>
+          </section>
+
+          <script>
+          /*
+           * Set these values using GitHub Actions environment substitution.
+           * Only a Supabase publishable/anon key belongs in this client.
+           */
+          const SUPABASE_URL = "__SUPABASE_URL__";
+          const SUPABASE_KEY = "__SUPABASE_KEY__";
+
+          let db = null;
+          let currentUser = null;
+
+          const $ = id => document.getElementById(id);
+
+          function esc(value) {
+            return String(value ?? "").replace(/[&<>"']/g, c => ({
+              "&":"&amp;","<":"&lt;",">":"&gt;",
+              '"':"&quot;","'":"&#39;"
+            }[c]));
+          }
+
+          function authMessage(text) {
+            $("authmsg").textContent = text;
+          }
+
+          async function register() {
+            if (!db) return authMessage("Supabase configuration is missing.");
+
+            const email = $("email").value.trim();
+            const password = $("password").value;
+            const username = $("username").value.trim();
+
+            if (!email || !password || !username)
+              return authMessage("Enter email, password and username.");
+
+            if (password.length < 8)
+              return authMessage("Use a password with at least 8 characters.");
+
+            const {data,error} = await db.auth.signUp({
+              email,
+              password,
+              options:{data:{username}}
+            });
+
+            if (error) return authMessage(error.message);
+
+            if (!data.session) {
+              return authMessage("Check your email to confirm your account, then log in.");
+            }
+
+            currentUser = data.user;
+            await openApp();
+          }
+
+          async function login() {
+            if (!db) return authMessage("Supabase configuration is missing.");
+
+            const email = $("email").value.trim();
+            const password = $("password").value;
+
+            if (!email || !password)
+              return authMessage("Enter your email and password.");
+
+            const {data,error} = await db.auth.signInWithPassword({
+              email,password
+            });
+
+            if (error) return authMessage(error.message);
+
+            currentUser = data.user;
+            await openApp();
+          }
+
+          async function openApp() {
+            $("auth").classList.add("hidden");
+            $("app").classList.remove("hidden");
+            await navigate("Home");
+          }
+
+          async function logout() {
+            const {error} = await db.auth.signOut();
+            if (error) return alert(error.message);
+
+            currentUser = null;
+            $("app").classList.add("hidden");
+            $("auth").classList.remove("hidden");
+            authMessage("You have logged out.");
+          }
+
+          async function navigate(page) {
+            document.querySelectorAll(".tab").forEach(tab => {
+              tab.classList.toggle("active",tab.dataset.page === page);
+            });
+
+            const content = $("content");
+
+            if (page === "Home") {
+              content.innerHTML = `
+                <div class="card">
+                  <div class="row">
+                    <div class="avatar">E</div>
+                    <button style="flex:1;text-align:left" onclick="navigate('Create')">What's on your mind?</button>
+                  </div>
+                  <div class="actions">
+                    <button onclick="navigate('Create')">📷 Photo / Post</button>
+                    <button onclick="navigate('Reels')">▶ Video</button>
+                  </div>
+                </div>
+                <div class="card">
+                  <div class="title">Stories</div>
+                  <div class="stories">
+                    <div class="story" onclick="navigate('CreateStory')">＋ Create story</div>
+                    <div class="story">Friends</div>
+                    <div class="story">Stories</div>
+                  </div>
+                </div>
+                <div class="row between">
+                  <div class="title">Feed</div>
+                  <button onclick="loadPosts()">↻ Refresh</button>
+                </div>
+                <div id="feed">Loading posts…</div>`;
+              await loadPosts();
+              return;
+            }
+
+            if (page === "Create") {
+              content.innerHTML = `
+                <div class="card">
+                  <div class="title">Create a post</div>
+                  <textarea id="posttext" rows="5" placeholder="What's on your mind?"></textarea>
+                  <input id="postimage" placeholder="Public image URL (optional)">
+                  <button class="blue full" onclick="createPost()">Publish</button>
+                  <p id="postmsg"></p>
+                </div>`;
+              return;
+            }
+
+            if (page === "Friends" || page === "Search") {
+              content.innerHTML = `
+                <div class="card">
+                  <div class="title">${page === "Friends" ? "Friends" : "Find people"}</div>
+                  <input id="peoplequery" placeholder="Search by username">
+                  <button class="blue full" onclick="searchPeople()">Search</button>
+                  <div id="people"></div>
+                </div>
+                <div class="card">
+                  <div class="title">Friend requests</div>
+                  <button class="full" onclick="loadRequests()">Refresh requests</button>
+                  <div id="requests"></div>
+                </div>`;
+              return;
+            }
+
+            if (page === "Messenger") {
+              content.innerHTML = `
+                <div class="card">
+                  <div class="title">Messenger</div>
+                  <input id="recipient" placeholder="Recipient user ID">
+                  <div id="messages"></div>
+                  <textarea id="messageText" placeholder="Write a message"></textarea>
+                  <button class="blue full" onclick="sendMessage()">Send message</button>
+                  <button class="full" onclick="loadMessages()">Refresh conversation</button>
+                  <p id="messageStatus" class="muted"></p>
+                </div>`;
+              return;
+            }
+
+            if (page === "Reels") {
+              content.innerHTML = `
+                <div class="card">
+                  <div class="title">Reels & Videos</div>
+                  <input id="videoUrl" placeholder="Public video URL">
+                  <textarea id="videoCaption" placeholder="Caption"></textarea>
+                  <button class="blue full" onclick="createVideo()">Publish video</button>
+                </div>
+                <div id="reelsFeed"></div>`;
+              await loadVideos();
+              return;
+            }
+
+            if (page === "Notifications") {
+              content.innerHTML = `
+                <div class="card">
+                  <div class="title">Notifications</div>
+                  <button class="full" onclick="loadNotifications()">Refresh</button>
+                  <div id="noticeFeed"></div>
+                </div>`;
+              await loadNotifications();
+              return;
+            }
+
+            if (page === "Marketplace") {
+              content.innerHTML = `
+                <div class="card">
+                  <div class="title">Marketplace</div>
+                  <input id="productTitle" placeholder="Product name">
+                  <input id="productPrice" type="number" min="0" placeholder="Price">
+                  <input id="productImage" placeholder="Public image URL (optional)">
+                  <textarea id="productDescription" placeholder="Description"></textarea>
+                  <button class="blue full" onclick="createListing()">List product</button>
+                </div>
+                <div id="marketFeed"></div>`;
+              await loadListings();
+              return;
+            }
+
+            if (page === "CreateStory") {
+              content.innerHTML = `
+                <div class="card">
+                  <div class="title">Create story</div>
+                  <textarea id="storyContent" placeholder="Write your story"></textarea>
+                  <input id="storyImage" placeholder="Public image URL (optional)">
+                  <button class="blue full" onclick="createStory()">Share story</button>
+                  <p id="storyStatus"></p>
+                </div>`;
+              return;
+            }
+
+            if (page === "Profile") {
+              content.innerHTML = `
+                <div class="card">
+                  <div class="title">Your profile</div>
+                  <p>${esc(currentUser?.email)}</p>
+                  <input id="profileUsername" placeholder="Username">
+                  <input id="profileName" placeholder="Full name">
+                  <input id="profileBio" placeholder="Biography">
+                  <button class="blue full" onclick="saveProfile()">Save changes</button>
+                  <button class="full" onclick="logout()">Log out</button>
+                  <p id="profileStatus"></p>
+                </div>`;
+              return;
+            }
+
+            content.innerHTML = '<div class="card">Choose a section.</div>';
+          }
+
+          async function loadPosts() {
+            const box = $("feed");
+            if (!box) return;
+
+            const {data,error} = await db.from("posts")
+              .select("*")
+              .order("created_at",{ascending:false})
+              .limit(30);
+
+            if (error) {
+              box.innerHTML = `<div class="card error">${esc(error.message)}</div>`;
+              return;
+            }
+
+            if (!data?.length) {
+              box.innerHTML = '<div class="card">No posts yet. Create the first post!</div>';
+              return;
+            }
+
+            box.innerHTML = data.map(post => {
+              const image = post.image_url || post.photo_url || "";
+              return `
+                <article class="card">
+                  <div class="row">
+                    <div class="avatar">E</div>
+                    <div>
+                      <b>EPIC user</b>
+                      <div class="muted">${esc(post.created_at || "")}</div>
+                    </div>
+                  </div>
+                  <div class="posttext">${esc(post.content || post.body || "")}</div>
+                  ${image ? `<img src="${esc(image)}" alt="Post image" style="width:100%;margin-top:10px;border-radius:8px">` : ""}
+                  <div class="actions">
+                    <button onclick="likePost('${esc(post.id)}')">👍 Like</button>
+                    <button onclick="commentPost('${esc(post.id)}')">💬 Comment</button>
+                    <button onclick="sharePost('${esc(post.id)}')">↗ Share</button>
+                  </div>
+                </article>`;
+            }).join("");
+          }
+
+          async function createPost() {
+            const content = $("posttext").value.trim();
+            const image_url = $("postimage").value.trim() || null;
+
+            if (!content && !image_url) {
+              $("postmsg").textContent = "Write something or add an image URL.";
+              return;
+            }
+
+            const {error} = await db.from("posts").insert({
+              user_id:currentUser.id,
+              content,
+              image_url
+            });
+
+            if (error) {
+              $("postmsg").textContent = error.message;
+              return;
+            }
+
+            await navigate("Home");
+          }
+
+          async function likePost(postId) {
+            const {error} = await db.from("post_likes").upsert({
+              post_id:postId,
+              user_id:currentUser.id
+            },{onConflict:"post_id,user_id"});
+
+            alert(error ? error.message : "Post liked.");
+          }
+
+          async function commentPost(postId) {
+            const content = prompt("Write your comment:");
+            if (!content?.trim()) return;
+
+            const {error} = await db.from("comments").insert({
+              post_id:postId,
+              user_id:currentUser.id,
+              content:content.trim()
+            });
+
+            alert(error ? error.message : "Comment published.");
+          }
+
+          async function sharePost(postId) {
+            const {data,error} = await db.from("posts")
+              .select("content")
+              .eq("id",postId)
+              .single();
+
+            if (error) return alert(error.message);
+
+            const text = data.content || "";
+            if (navigator.share) {
+              try {
+                await navigator.share({title:"EPIC",text});
+              } catch (e) {}
+            } else {
+              alert(text);
+            }
+          }
+
+          async function searchPeople() {
+            const query = $("peoplequery").value.trim();
+            const box = $("people");
+            const {data,error} = await db.from("profiles")
+              .select("id,username,full_name")
+              .ilike("username","%" + query + "%")
+              .limit(25);
+
+            if (error) {
+              box.textContent = error.message;
+              return;
+            }
+
+            box.innerHTML = (data || [])
+              .filter(person => person.id !== currentUser.id)
+              .map(person => `
+                <div class="card">
+                  <b>${esc(person.full_name || person.username)}</b>
+                  <div class="muted">@${esc(person.username)}</div>
+                  <button onclick="sendFriendRequest('${esc(person.id)}')">Add friend</button>
+                </div>`).join("") || "No people found.";
+          }
+
+          async function sendFriendRequest(receiverId) {
+            const {error} = await db.from("friend_requests").insert({
+              sender_id:currentUser.id,
+              receiver_id:receiverId,
+              status:"pending"
+            });
+
+            alert(error ? error.message : "Friend request sent.");
+          }
+
+          async function loadRequests() {
+            const box = $("requests");
+            const {data,error} = await db.from("friend_requests")
+              .select("*")
+              .eq("receiver_id",currentUser.id)
+              .eq("status","pending");
+
+            if (error) {
+              box.textContent = error.message;
+              return;
+            }
+
+            box.innerHTML = (data || []).map(request => `
+              <div class="card">
+                <p>Request from ${esc(request.sender_id)}</p>
+                <button class="blue" onclick="answerRequest('${esc(request.id)}','accepted')">Accept</button>
+                <button onclick="answerRequest('${esc(request.id)}','rejected')">Reject</button>
+              </div>`).join("") || "No pending requests.";
+          }
+
+          async function answerRequest(id,status) {
+            const {error} = await db.from("friend_requests")
+              .update({status})
+              .eq("id",id)
+              .eq("receiver_id",currentUser.id);
+
+            if (error) alert(error.message);
+            else await loadRequests();
+          }
+
+          async function sendMessage() {
+            const receiver_id = $("recipient").value.trim();
+            const content = $("messageText").value.trim();
+
+            if (!receiver_id || !content) {
+              $("messageStatus").textContent = "Enter a recipient ID and message.";
+              return;
+            }
+
+            const {error} = await db.from("messages").insert({
+              sender_id:currentUser.id,
+              receiver_id,
+              content
+            });
+
+            $("messageStatus").textContent = error ? error.message : "Message sent.";
+            if (!error) $("messageText").value = "";
+          }
+
+          async function loadMessages() {
+            const recipient = $("recipient").value.trim();
+            const box = $("messages");
+
+            if (!recipient) {
+              box.textContent = "Enter a recipient ID.";
+              return;
+            }
+
+            const {data,error} = await db.from("messages")
+              .select("*")
+              .or(
+                `and(sender_id.eq.${currentUser.id},receiver_id.eq.${recipient}),and(sender_id.eq.${recipient},receiver_id.eq.${currentUser.id})`
+              )
+              .order("created_at",{ascending:true})
+              .limit(100);
+
+            if (error) {
+              box.textContent = error.message;
+              return;
+            }
+
+            box.innerHTML = (data || []).map(msg => `
+              <div class="card">
+                <b>${msg.sender_id === currentUser.id ? "You" : "Other user"}</b>
+                <p>${esc(msg.content || msg.message || "")}</p>
+                <div class="muted">${esc(msg.created_at || "")}</div>
+              </div>`).join("") || "No messages yet.";
+          }
+
+          async function createVideo() {
+            const url = $("videoUrl").value.trim();
+            const content = $("videoCaption").value.trim();
+
+            if (!url) return alert("Enter a public video URL.");
+
+            const {error} = await db.from("posts").insert({
+              user_id:currentUser.id,
+              content,
+              image_url:url
+            });
+
+            if (error) return alert(error.message);
+            await navigate("Reels");
+          }
+
+          async function loadVideos() {
+            const box = $("reelsFeed");
+            const {data,error} = await db.from("posts")
+              .select("*")
+              .not("image_url","is",null)
+              .order("created_at",{ascending:false})
+              .limit(20);
+
+            if (error) {
+              box.textContent = error.message;
+              return;
+            }
+
+            box.innerHTML = (data || []).map(post => `
+              <div class="card">
+                <p>${esc(post.content || "")}</p>
+                <video controls playsinline style="width:100%" src="${esc(post.image_url)}"></video>
+              </div>`).join("") || "No video posts yet.";
+          }
+
+          async function createStory() {
+            const content = $("storyContent").value.trim();
+            const image_url = $("storyImage").value.trim() || null;
+
+            const {error} = await db.from("stories").insert({
+              user_id:currentUser.id,
+              content,
+              image_url
+            });
+
+            $("storyStatus").textContent = error ? error.message : "Story shared.";
+          }
+
+          async function loadNotifications() {
+            const box = $("noticeFeed");
+            const {data,error} = await db.from("notifications")
+              .select("*")
+              .eq("user_id",currentUser.id)
+              .order("created_at",{ascending:false})
+              .limit(50);
+
+            if (error) {
+              box.textContent = error.message;
+              return;
+            }
+
+            box.innerHTML = (data || []).map(item => `
+              <div class="card">
+                <b>${esc(item.type || "Notification")}</b>
+                <p>${esc(item.content || item.message || "")}</p>
+                <div class="muted">${esc(item.created_at || "")}</div>
+              </div>`).join("") || "No notifications yet.";
+          }
+
+          async function createListing() {
+            const title = $("productTitle").value.trim();
+            const price = Number($("productPrice").value);
+            const description = $("productDescription").value.trim();
+            const image_url = $("productImage").value.trim() || null;
+
+            if (!title || $("productPrice").value === "" ||
+                !Number.isFinite(price) || price < 0) {
+              return alert("Enter a product name and valid price.");
+            }
+
+            const {error} = await db.from("marketplace_listings").insert({
+              seller_id:currentUser.id,
+              title,
+              price,
+              description,
+              image_url
+            });
+
+            if (error) return alert(error.message);
+            await navigate("Marketplace");
+          }
+
+          async function loadListings() {
+            const box = $("marketFeed");
+            const {data,error} = await db.from("marketplace_listings")
+              .select("*")
+              .order("created_at",{ascending:false})
+              .limit(50);
+
+            if (error) {
+              box.innerHTML = `<div class="card error">${esc(error.message)}</div>`;
+              return;
+            }
+
+            box.innerHTML = (data || []).map(item => `
+              <div class="card">
+                ${item.image_url ? `<img src="${esc(item.image_url)}" alt="Product" style="width:100%;border-radius:8px">` : ""}
+                <h3>${esc(item.title || item.name || "Product")}</h3>
+                <b>${esc(item.price ?? "")}</b>
+                <p>${esc(item.description || "")}</p>
+                <button onclick="alert('Seller ID: ${esc(item.seller_id)}')">Contact seller</button>
+              </div>`).join("") || "No listings yet.";
+          }
+
+          async function saveProfile() {
+            const changes = {id:currentUser.id};
+            const username = $("profileUsername").value.trim();
+            const full_name = $("profileName").value.trim();
+            const bio = $("profileBio").value.trim();
+
+            if (username) changes.username = username;
+            if (full_name) changes.full_name = full_name;
+            if (bio) changes.bio = bio;
+
+            const {error} = await db.from("profiles").upsert(changes,{onConflict:"id"});
+            $("profileStatus").textContent = error ? error.message : "Profile saved.";
+          }
+
+          async function start() {
+            try {
+              if (!window.supabase) {
+                authMessage("Could not load the Supabase library. Check your internet connection.");
+                return;
+              }
+
+              if (SUPABASE_URL.startsWith("__") ||
+                  SUPABASE_KEY.startsWith("__")) {
+                authMessage("Supabase settings are missing.");
+                return;
+              }
+
+              db = window.supabase.createClient(SUPABASE_URL,SUPABASE_KEY);
+
+              const {data,error} = await db.auth.getSession();
+              if (error) {
+                authMessage(error.message);
+                return;
+              }
+
+              if (data.session) {
+                currentUser = data.session.user;
+                await openApp();
+              }
+            } catch (e) {
+              authMessage("Startup error: " + e.message);
+            }
+          }
+
+          start();
+          </script>
+          </body>
+          </html>
+          HTML
+
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          path = Path("app/src/main/assets/index.html")
+          html = path.read_text()
+
+          url = os.environ["SUPABASE_URL"].strip().rstrip("/")
+          key = os.environ["SUPABASE_KEY"].strip()
+
+          if not url.startswith("https://"):
+              raise SystemExit("SUPABASE_URL must start with https://")
+
+          if not key:
+              raise SystemExit("SUPABASE_PUBLISHABLE_KEY is empty")
+
+          html = html.replace("__SUPABASE_URL__", url)
+          html = html.replace("__SUPABASE_KEY__", key)
+
+          path.write_text(html)
+          PY
+
+      - name: Build debug APK
+        run: gradle --no-daemon assembleDebug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: EPIC-Android-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
