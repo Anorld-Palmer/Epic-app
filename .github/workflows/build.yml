@@ -1,0 +1,998 @@
+name: Build Epic Android App
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_PUBLISHABLE_KEY: ${{ secrets.SUPABASE_PUBLISHABLE_KEY }}
+
+    steps:
+      - name: Download Epic source
+        uses: actions/checkout@v4
+
+      - name: Install Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Install SDK packages
+        run: |
+          sdkmanager \
+            "platforms;android-35" \
+            "build-tools;35.0.0"
+
+      - name: Install Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Generate Epic Android project
+        shell: bash
+        run: |
+          mkdir -p app/src/main/java/com/epic/social
+          mkdir -p app/src/main/res/drawable
+
+          cat > settings.gradle <<'EOF'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+
+          dependencyResolutionManagement {
+              repositoriesMode.set(
+                  RepositoriesMode.FAIL_ON_PROJECT_REPOS
+              )
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+
+          rootProject.name = "Epic"
+          include(":app")
+          EOF
+
+          cat > build.gradle <<'EOF'
+          plugins {
+              id 'com.android.application' version '8.7.3' apply false
+          }
+          EOF
+
+          cat > app/build.gradle <<'EOF'
+          plugins {
+              id 'com.android.application'
+          }
+
+          def supabaseUrl = System.getenv("SUPABASE_URL") ?: ""
+          def supabaseKey = System.getenv("SUPABASE_PUBLISHABLE_KEY") ?: ""
+
+          def escapeValue = { String value ->
+              value.replace("\\", "\\\\").replace("\"", "\\\"")
+          }
+
+          android {
+              namespace 'com.epic.social'
+              compileSdk 35
+
+              buildFeatures {
+                  buildConfig true
+              }
+
+              defaultConfig {
+                  applicationId 'com.epic.social'
+                  minSdk 23
+                  targetSdk 34
+                  versionCode 1
+                  versionName '1.0'
+
+                  buildConfigField "String", "SUPABASE_URL",
+                      "\"${escapeValue(supabaseUrl)}\""
+
+                  buildConfigField "String", "SUPABASE_PUBLISHABLE_KEY",
+                      "\"${escapeValue(supabaseKey)}\""
+              }
+          }
+          EOF
+
+          cat > app/src/main/AndroidManifest.xml <<'EOF'
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+              <uses-permission
+                  android:name="android.permission.INTERNET" />
+
+              <application
+                  android:label="Epic"
+                  android:theme="@android:style/Theme.Material.Light.NoActionBar"
+                  android:usesCleartextTraffic="false">
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true">
+
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+
+          cat > app/src/main/java/com/epic/social/MainActivity.java <<'EOF'
+          package com.epic.social;
+
+          import android.app.Activity;
+          import android.app.AlertDialog;
+          import android.graphics.Color;
+          import android.graphics.Typeface;
+          import android.graphics.drawable.GradientDrawable;
+          import android.os.Bundle;
+          import android.text.InputType;
+          import android.view.Gravity;
+          import android.widget.Button;
+          import android.widget.EditText;
+          import android.widget.LinearLayout;
+          import android.widget.ScrollView;
+          import android.widget.TextView;
+          import android.widget.Toast;
+
+          import org.json.JSONArray;
+          import org.json.JSONObject;
+
+          import java.io.ByteArrayOutputStream;
+          import java.io.InputStream;
+          import java.io.OutputStream;
+          import java.net.HttpURLConnection;
+          import java.net.URL;
+          import java.nio.charset.StandardCharsets;
+          import java.util.HashMap;
+          import java.util.Map;
+
+          public class MainActivity extends Activity {
+
+              private int BG = Color.WHITE;
+              private int CARD = Color.rgb(245, 246, 250);
+              private int ACCENT = Color.rgb(105, 85, 255);
+              private int TEXT = Color.rgb(25, 28, 40);
+              private int MUTED = Color.rgb(110, 115, 130);
+
+              private String accessToken = "";
+              private String userId = "";
+              private String email = "";
+
+              private LinearLayout feedContainer;
+
+              private int dp(int value) {
+                  return (int) (value *
+                      getResources().getDisplayMetrics().density);
+              }
+
+              private GradientDrawable background(int color) {
+                  GradientDrawable d = new GradientDrawable();
+                  d.setColor(color);
+                  d.setCornerRadius(dp(16));
+                  return d;
+              }
+
+              private void applyTheme() {
+                  int mode = getPreferences(MODE_PRIVATE)
+                      .getInt("theme_mode", 2);
+
+                  boolean dark;
+
+                  if (mode == 1) {
+                      dark = true;
+                  } else if (mode == 2) {
+                      dark = false;
+                  } else {
+                      int systemNightMode =
+                          getResources().getConfiguration()
+                              .uiMode & 0x30;
+
+                      dark = systemNightMode == 0x20;
+                  }
+
+                  if (dark) {
+                      BG = Color.rgb(12, 15, 28);
+                      CARD = Color.rgb(27, 32, 51);
+                      TEXT = Color.WHITE;
+                      MUTED = Color.rgb(185, 190, 210);
+                  } else {
+                      BG = Color.WHITE;
+                      CARD = Color.rgb(245, 246, 250);
+                      TEXT = Color.rgb(25, 28, 40);
+                      MUTED = Color.rgb(110, 115, 130);
+                  }
+
+                  getWindow().setStatusBarColor(BG);
+                  getWindow().setNavigationBarColor(BG);
+
+                  if (android.os.Build.VERSION.SDK_INT >= 23) {
+                      getWindow().getDecorView().setSystemUiVisibility(
+                          dark ? 0 :
+                          android.view.View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
+                      );
+                  }
+              }
+
+              private TextView label(
+                  String value, int size, int color, boolean bold
+              ) {
+                  TextView t = new TextView(this);
+                  t.setText(value);
+                  t.setTextSize(size);
+                  t.setTextColor(color);
+
+                  if (bold) {
+                      t.setTypeface(null, Typeface.BOLD);
+                  }
+
+                  return t;
+              }
+
+              private LinearLayout page(
+                  String heading, String subtitle
+              ) {
+                  applyTheme();
+
+                  ScrollView scroll = new ScrollView(this);
+                  scroll.setFillViewport(true);
+
+                  LinearLayout root = new LinearLayout(this);
+                  root.setOrientation(LinearLayout.VERTICAL);
+                  root.setPadding(dp(20), dp(30), dp(20), dp(24));
+                  root.setBackgroundColor(BG);
+
+                  scroll.addView(root);
+                  setContentView(scroll);
+
+                  TextView logo = label("EPIC", 34, ACCENT, true);
+                  logo.setGravity(Gravity.CENTER);
+                  root.addView(logo);
+
+                  TextView title = label(heading, 25, TEXT, true);
+                  title.setGravity(Gravity.CENTER);
+                  title.setPadding(0, dp(22), 0, dp(8));
+                  root.addView(title);
+
+                  TextView desc = label(subtitle, 14, MUTED, false);
+                  desc.setGravity(Gravity.CENTER);
+                  desc.setPadding(0, 0, 0, dp(24));
+                  root.addView(desc);
+
+                  return root;
+              }
+
+              private EditText field(
+                  LinearLayout root, String hint, int inputType
+              ) {
+                  EditText e = new EditText(this);
+                  e.setSingleLine(true);
+                  e.setHint(hint);
+                  e.setTextColor(TEXT);
+                  e.setHintTextColor(MUTED);
+                  e.setTextSize(16);
+                  e.setInputType(inputType);
+                  e.setPadding(dp(14), dp(8), dp(14), dp(8));
+                  e.setBackground(background(CARD));
+
+                  LinearLayout.LayoutParams p =
+                      new LinearLayout.LayoutParams(-1, dp(54));
+
+                  p.bottomMargin = dp(13);
+                  root.addView(e, p);
+
+                  return e;
+              }
+
+              private void button(
+                  LinearLayout root, String title, Runnable action
+              ) {
+                  Button b = new Button(this);
+                  b.setText(title);
+                  b.setTextColor(Color.WHITE);
+                  b.setTextSize(15);
+                  b.setAllCaps(false);
+                  b.setTypeface(null, Typeface.BOLD);
+                  b.setBackground(background(ACCENT));
+
+                  LinearLayout.LayoutParams p =
+                      new LinearLayout.LayoutParams(-1, dp(52));
+
+                  p.bottomMargin = dp(12);
+                  root.addView(b, p);
+
+                  b.setOnClickListener(v -> action.run());
+              }
+
+              private void message(String value) {
+                  Toast.makeText(
+                      this, value, Toast.LENGTH_LONG
+                  ).show();
+              }
+
+              @Override
+              protected void onCreate(Bundle state) {
+                  super.onCreate(state);
+
+                  applyTheme();
+                  showLogin();
+              }
+
+              private String api(
+                  String method,
+                  String path,
+                  JSONObject body,
+                  boolean authenticated
+              ) throws Exception {
+
+                  String base = BuildConfig.SUPABASE_URL;
+
+                  if (base == null || base.trim().isEmpty()) {
+                      throw new Exception(
+                          "Supabase URL is missing. Check your GitHub secrets."
+                      );
+                  }
+
+                  base = base.trim();
+
+                  if (!base.startsWith("https://") &&
+                      !base.startsWith("http://")) {
+                      throw new Exception(
+                          "Invalid Supabase URL. Enter your project URL, " +
+                          "not your publishable key."
+                      );
+                  }
+
+                  while (base.endsWith("/")) {
+                      base = base.substring(0, base.length() - 1);
+                  }
+
+                  String key = BuildConfig.SUPABASE_PUBLISHABLE_KEY;
+
+                  if (key == null || key.trim().isEmpty()) {
+                      throw new Exception(
+                          "Supabase publishable key is missing."
+                      );
+                  }
+
+                  URL url = new URL(base + path);
+
+                  HttpURLConnection c =
+                      (HttpURLConnection) url.openConnection();
+
+                  try {
+                      c.setRequestMethod(method);
+                      c.setConnectTimeout(15000);
+                      c.setReadTimeout(15000);
+
+                      c.setRequestProperty("apikey", key);
+                      c.setRequestProperty("Accept", "application/json");
+
+                      if (authenticated && !accessToken.isEmpty()) {
+                          c.setRequestProperty(
+                              "Authorization",
+                              "Bearer " + accessToken
+                          );
+                      }
+
+                      if (body != null) {
+                          c.setRequestProperty(
+                              "Content-Type", "application/json"
+                          );
+
+                          if (path.startsWith("/rest/v1/")) {
+                              c.setRequestProperty(
+                                  "Prefer", "return=minimal"
+                              );
+                          }
+
+                          c.setDoOutput(true);
+
+                          try (OutputStream out = c.getOutputStream()) {
+                              out.write(body.toString().getBytes(
+                                  StandardCharsets.UTF_8
+                              ));
+                          }
+                      }
+
+                      int status = c.getResponseCode();
+
+                      InputStream stream = status < 400
+                          ? c.getInputStream()
+                          : c.getErrorStream();
+
+                      ByteArrayOutputStream buffer =
+                          new ByteArrayOutputStream();
+
+                      if (stream != null) {
+                          try (InputStream in = stream) {
+                              byte[] data = new byte[4096];
+                              int count;
+
+                              while ((count = in.read(data)) != -1) {
+                                  buffer.write(data, 0, count);
+                              }
+                          }
+                      }
+
+                      String response = new String(
+                          buffer.toByteArray(),
+                          StandardCharsets.UTF_8
+                      );
+
+                      // IMPROVED HTTP ERROR REPORTING
+                      // Shows the HTTP status, API path and server response.
+                      if (status >= 400) {
+                          String details =
+                              response == null || response.trim().isEmpty()
+                                  ? "No response body returned by server"
+                                  : response;
+
+                          throw new Exception(
+                              "HTTP " + status +
+                              " | Path: " + path +
+                              " | Details: " + details
+                          );
+                      }
+
+                      return response;
+
+                  } finally {
+                      c.disconnect();
+                  }
+              }
+
+              private void showLogin() {
+                  LinearLayout root = page(
+                      "Welcome to Epic",
+                      "Connect with people and share your world."
+                  );
+
+                  EditText e = field(
+                      root,
+                      "Email address",
+                      InputType.TYPE_CLASS_TEXT |
+                      InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS
+                  );
+
+                  EditText p = field(
+                      root,
+                      "Password",
+                      InputType.TYPE_CLASS_TEXT |
+                      InputType.TYPE_TEXT_VARIATION_PASSWORD
+                  );
+
+                  button(root, "Log in", () -> {
+                      String address = e.getText().toString().trim();
+                      String password = p.getText().toString();
+
+                      if (address.isEmpty() || password.isEmpty()) {
+                          message("Enter your email and password.");
+                          return;
+                      }
+
+                      new Thread(() -> {
+                          try {
+                              JSONObject body = new JSONObject();
+                              body.put("email", address);
+                              body.put("password", password);
+
+                              String result = api(
+                                  "POST",
+                                  "/auth/v1/token?grant_type=password",
+                                  body,
+                                  false
+                              );
+
+                              JSONObject data = new JSONObject(result);
+
+                              runOnUiThread(() -> afterLogin(data));
+
+                          } catch (Exception ex) {
+                              runOnUiThread(() -> message(
+                                  ex.getMessage() == null
+                                      ? "Login failed."
+                                      : ex.getMessage()
+                              ));
+                          }
+                      }).start();
+                  });
+
+                  button(root, "Create an account", this::showRegister);
+              }
+
+              private void showRegister() {
+                  LinearLayout root = page(
+                      "Join Epic",
+                      "Create your account to get started."
+                  );
+
+                  EditText username = field(
+                      root,
+                      "Username (3–24 characters)",
+                      InputType.TYPE_CLASS_TEXT
+                  );
+
+                  EditText e = field(
+                      root,
+                      "Email address",
+                      InputType.TYPE_CLASS_TEXT |
+                      InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS
+                  );
+
+                  EditText p = field(
+                      root,
+                      "Password (at least 6 characters)",
+                      InputType.TYPE_CLASS_TEXT |
+                      InputType.TYPE_TEXT_VARIATION_PASSWORD
+                  );
+
+                  button(root, "Register", () -> {
+                      String name = username.getText().toString().trim();
+                      String address = e.getText().toString().trim();
+                      String password = p.getText().toString();
+
+                      if (!name.matches("[A-Za-z0-9_]{3,24}")) {
+                          message(
+                              "Use 3–24 letters, numbers or underscores."
+                          );
+                          return;
+                      }
+
+                      if (!address.contains("@") || password.length() < 6) {
+                          message("Enter a valid email and password.");
+                          return;
+                      }
+
+                      new Thread(() -> {
+                          try {
+                              JSONObject metadata = new JSONObject();
+                              metadata.put("username", name);
+
+                              JSONObject body = new JSONObject();
+                              body.put("email", address);
+                              body.put("password", password);
+                              body.put("data", metadata);
+
+                              String response = api(
+                                  "POST",
+                                  "/auth/v1/signup",
+                                  body,
+                                  false
+                              );
+
+                              JSONObject result = new JSONObject(response);
+
+                              if (result.has("access_token")) {
+                                  runOnUiThread(() -> afterLogin(result));
+                              } else {
+                                  runOnUiThread(() -> {
+                                      new AlertDialog.Builder(this)
+                                          .setTitle("Check your email")
+                                          .setMessage(
+                                              "Epic received your registration. " +
+                                              "Confirm your email if requested, " +
+                                              "then return and log in."
+                                          )
+                                          .setPositiveButton(
+                                              "Log in",
+                                              (d, w) -> showLogin()
+                                          )
+                                          .show();
+                                  });
+                              }
+
+                          } catch (Exception ex) {
+                              runOnUiThread(() -> message(
+                                  ex.getMessage() == null
+                                      ? "Registration failed."
+                                      : ex.getMessage()
+                              ));
+                          }
+                      }).start();
+                  });
+
+                  button(root, "Back to login", this::showLogin);
+              }
+
+              private void afterLogin(JSONObject result) {
+                  accessToken = result.optString("access_token");
+
+                  JSONObject user = result.optJSONObject("user");
+
+                  if (user == null || accessToken.isEmpty()) {
+                      message("Please confirm your email, then log in.");
+                      showLogin();
+                      return;
+                  }
+
+                  userId = user.optString("id");
+                  email = user.optString("email");
+
+                  JSONObject metadata = user.optJSONObject("user_metadata");
+                  String suggested = metadata == null
+                      ? ""
+                      : metadata.optString("username", "");
+
+                  new Thread(() -> {
+                      try {
+                          String response = api(
+                              "GET",
+                              "/rest/v1/epic_profiles?id=eq." +
+                                  userId + "&select=id,username",
+                              null,
+                              true
+                          );
+
+                          JSONArray profiles = new JSONArray(response);
+
+                          if (profiles.length() > 0) {
+                              runOnUiThread(this::showFeed);
+                          } else if (!suggested.isEmpty()) {
+                              createProfile(suggested);
+                          } else {
+                              runOnUiThread(this::askUsername);
+                          }
+
+                      } catch (Exception ex) {
+                          runOnUiThread(() -> message(
+                              "Profile error: " + ex.getMessage()
+                          ));
+                      }
+                  }).start();
+              }
+
+              private void askUsername() {
+                  EditText input = new EditText(this);
+                  input.setHint("Choose a username");
+                  input.setSingleLine(true);
+
+                  new AlertDialog.Builder(this)
+                      .setTitle("Complete your profile")
+                      .setMessage("Choose a unique username.")
+                      .setView(input)
+                      .setCancelable(false)
+                      .setPositiveButton("Save", (d, w) -> {
+                          String name = input.getText().toString().trim();
+
+                          if (!name.matches("[A-Za-z0-9_]{3,24}")) {
+                              message(
+                                  "Use 3–24 letters, numbers or underscores."
+                              );
+                              askUsername();
+                              return;
+                          }
+
+                          createProfile(name);
+                      })
+                      .show();
+              }
+
+              private void createProfile(String username) {
+                  new Thread(() -> {
+                      try {
+                          JSONObject body = new JSONObject();
+                          body.put("id", userId);
+                          body.put("username", username);
+                          body.put("display_name", username);
+
+                          api(
+                              "POST",
+                              "/rest/v1/epic_profiles",
+                              body,
+                              true
+                          );
+
+                          runOnUiThread(this::showFeed);
+
+                      } catch (Exception ex) {
+                          runOnUiThread(() -> {
+                              message(
+                                  "Could not save profile: " +
+                                  ex.getMessage()
+                              );
+                              askUsername();
+                          });
+                      }
+                  }).start();
+              }
+
+              private void showFeed() {
+                  LinearLayout root = page(
+                      "Your feed",
+                      "Welcome to the Epic community."
+                  );
+
+                  button(root, "＋ Create a post", this::createPost);
+                  button(root, "Refresh feed", this::loadFeed);
+                  button(root, "Settings", this::showSettings);
+
+                  feedContainer = new LinearLayout(this);
+                  feedContainer.setOrientation(LinearLayout.VERTICAL);
+
+                  root.addView(
+                      feedContainer,
+                      new LinearLayout.LayoutParams(-1, -2)
+                  );
+
+                  button(root, "Log out", () -> {
+                      accessToken = "";
+                      userId = "";
+                      email = "";
+                      feedContainer = null;
+                      showLogin();
+                  });
+
+                  loadFeed();
+              }
+
+              private void showSettings() {
+                  LinearLayout root = page(
+                      "Settings",
+                      "Choose how Epic looks on your device."
+                  );
+
+                  button(root, "Use light theme", () -> {
+                      getPreferences(MODE_PRIVATE).edit()
+                          .putInt("theme_mode", 2)
+                          .apply();
+
+                      showFeed();
+                  });
+
+                  button(root, "Use dark theme", () -> {
+                      getPreferences(MODE_PRIVATE).edit()
+                          .putInt("theme_mode", 1)
+                          .apply();
+
+                      showFeed();
+                  });
+
+                  button(root, "Follow system theme", () -> {
+                      getPreferences(MODE_PRIVATE).edit()
+                          .putInt("theme_mode", 0)
+                          .apply();
+
+                      showFeed();
+                  });
+
+                  button(root, "Back to feed", this::showFeed);
+              }
+
+              private void loadFeed() {
+                  if (userId.isEmpty()) return;
+
+                  if (feedContainer != null) {
+                      feedContainer.removeAllViews();
+                      feedContainer.addView(label(
+                          "Loading posts...", 15, MUTED, false
+                      ));
+                  }
+
+                  new Thread(() -> {
+                      try {
+                          Map<String, String> names = new HashMap<>();
+
+                          JSONArray profiles = new JSONArray(api(
+                              "GET",
+                              "/rest/v1/epic_profiles?select=id,username",
+                              null,
+                              true
+                          ));
+
+                          for (int i = 0; i < profiles.length(); i++) {
+                              JSONObject profile = profiles.getJSONObject(i);
+
+                              names.put(
+                                  profile.optString("id"),
+                                  profile.optString("username")
+                              );
+                          }
+
+                          JSONArray posts = new JSONArray(api(
+                              "GET",
+                              "/rest/v1/epic_posts?select=id,user_id,content,created_at&order=created_at.desc&limit=50",
+                              null,
+                              true
+                          ));
+
+                          runOnUiThread(() -> {
+                              if (feedContainer == null) return;
+
+                              feedContainer.removeAllViews();
+
+                              if (posts.length() == 0) {
+                                  feedContainer.addView(label(
+                                      "No posts yet. Be the first!",
+                                      16, MUTED, false
+                                  ));
+                                  return;
+                              }
+
+                              for (int i = 0; i < posts.length(); i++) {
+                                  JSONObject post = posts.optJSONObject(i);
+
+                                  if (post != null) {
+                                      addPostCard(post, names);
+                                  }
+                              }
+                          });
+
+                      } catch (Exception ex) {
+                          runOnUiThread(() -> message(
+                              "Could not load feed: " + ex.getMessage()
+                          ));
+                      }
+                  }).start();
+              }
+
+              private void addPostCard(
+                  JSONObject post, Map<String, String> names
+              ) {
+                  LinearLayout card = new LinearLayout(this);
+                  card.setOrientation(LinearLayout.VERTICAL);
+                  card.setPadding(dp(16), dp(14), dp(16), dp(12));
+                  card.setBackground(background(CARD));
+
+                  LinearLayout.LayoutParams cp =
+                      new LinearLayout.LayoutParams(-1, -2);
+
+                  cp.bottomMargin = dp(14);
+                  feedContainer.addView(card, cp);
+
+                  String authorId = post.optString("user_id");
+                  String author = names.get(authorId);
+
+                  if (author == null) author = "Epic member";
+
+                  TextView name = label(
+                      "@" + author, 15, ACCENT, true
+                  );
+
+                  card.addView(name);
+
+                  TextView content = label(
+                      post.optString("content"),
+                      16, TEXT, false
+                  );
+
+                  content.setPadding(0, dp(12), 0, dp(12));
+                  card.addView(content);
+
+                  Button like = new Button(this);
+                  like.setText("♥ Like");
+                  like.setTextColor(Color.WHITE);
+                  like.setAllCaps(false);
+                  like.setBackground(background(ACCENT));
+                  card.addView(like);
+
+                  like.setOnClickListener(v -> {
+                      new Thread(() -> {
+                          try {
+                              JSONObject body = new JSONObject();
+                              body.put("post_id", post.optString("id"));
+                              body.put("user_id", userId);
+
+                              api(
+                                  "POST",
+                                  "/rest/v1/epic_likes",
+                                  body,
+                                  true
+                              );
+
+                              runOnUiThread(() -> message("Post liked!"));
+
+                          } catch (Exception ex) {
+                              runOnUiThread(() -> message(
+                                  "Could not like post: " + ex.getMessage()
+                              ));
+                          }
+                      }).start();
+                  });
+              }
+
+              private void createPost() {
+                  EditText input = new EditText(this);
+                  input.setHint("What's on your mind?");
+                  input.setMinLines(3);
+                  input.setGravity(Gravity.TOP);
+                  input.setInputType(
+                      InputType.TYPE_CLASS_TEXT |
+                      InputType.TYPE_TEXT_FLAG_MULTI_LINE
+                  );
+
+                  new AlertDialog.Builder(this)
+                      .setTitle("Create a post")
+                      .setView(input)
+                      .setNegativeButton("Cancel", null)
+                      .setPositiveButton("Publish", (d, w) -> {
+                          String content =
+                              input.getText().toString().trim();
+
+                          if (content.isEmpty()) {
+                              message("Write something first.");
+                              return;
+                          }
+
+                          if (content.length() > 5000) {
+                              message("Keep posts under 5,000 characters.");
+                              return;
+                          }
+
+                          new Thread(() -> {
+                              try {
+                                  JSONObject body = new JSONObject();
+                                  body.put("user_id", userId);
+                                  body.put("content", content);
+
+                                  api(
+                                      "POST",
+                                      "/rest/v1/epic_posts",
+                                      body,
+                                      true
+                                  );
+
+                                  runOnUiThread(() -> {
+                                      message("Your post was published!");
+                                      loadFeed();
+                                  });
+
+                              } catch (Exception ex) {
+                                  runOnUiThread(() -> message(
+                                      "Could not publish: " +
+                                      ex.getMessage()
+                                  ));
+                              }
+                          }).start();
+                      })
+                      .show();
+              }
+          }
+          EOF
+
+      - name: Build Epic APK
+        run: gradle --no-daemon assembleDebug
+
+      - name: Prepare direct APK download
+        run: |
+          cp app/build/outputs/apk/debug/app-debug.apk Epic.apk
+          ls -lh Epic.apk
+
+      - name: Publish Epic APK to GitHub Releases
+        uses: softprops/action-gh-release@v2
+        if: github.ref == 'refs/heads/main'
+        with:
+          tag_name: epic-latest
+          name: Epic Android App
+          body: |
+            Download Epic.apk below and install it on your Android phone.
+          files: Epic.apk
+          overwrite_files: true
+
+      - name: Save APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Epic-Android
+          path: Epic.apk
+          if-no-files-found: error
+          retention-days: 30
