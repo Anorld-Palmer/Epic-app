@@ -1,0 +1,865 @@
+name: Build EPIC Social Media APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build Installable EPIC APK
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK components
+        run: |
+          sdkmanager --install \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0"
+
+          yes | sdkmanager --licenses || true
+
+      - name: Create Android project
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_PUBLISHABLE_KEY: ${{ secrets.SUPABASE_PUBLISHABLE_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p app/src/main/java/com/epic/social
+          mkdir -p app/src/main/assets
+          mkdir -p app/src/main/res/values
+
+          cat > settings.gradle <<'EOF'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+
+          rootProject.name = "EPIC"
+          include(":app")
+          EOF
+
+          cat > build.gradle <<'EOF'
+          plugins {
+              id 'com.android.application' version '8.7.3' apply false
+          }
+          EOF
+
+          cat > gradle.properties <<'EOF'
+          org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+          android.useAndroidX=true
+          android.nonTransitiveRClass=true
+          EOF
+
+          cat > app/build.gradle <<'EOF'
+          plugins {
+              id 'com.android.application'
+          }
+
+          android {
+              namespace 'com.epic.social'
+              compileSdk 35
+
+              defaultConfig {
+                  applicationId 'com.epic.social'
+                  minSdk 23
+                  targetSdk 35
+                  versionCode 1
+                  versionName '1.0'
+              }
+
+              buildTypes {
+                  debug {
+                      applicationIdSuffix ''
+                      versionNameSuffix ''
+                  }
+              }
+
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }
+          }
+          EOF
+
+          cat > app/src/main/res/values/styles.xml <<'EOF'
+          <resources>
+              <style name="AppTheme" parent="@android:style/Theme.Material.Light.NoActionBar">
+                  <item name="android:fontFamily">sans</item>
+                  <item name="android:colorAccent">#1877F2</item>
+                  <item name="android:statusBarColor">#FFFFFF</item>
+                  <item name="android:navigationBarColor">#FFFFFF</item>
+                  <item name="android:windowLightStatusBar">true</item>
+                  <item name="android:windowActionModeOverlay">true</item>
+              </style>
+          </resources>
+          EOF
+
+          cat > app/src/main/AndroidManifest.xml <<'EOF'
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.INTERNET"/>
+              <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
+
+              <application
+                  android:allowBackup="true"
+                  android:usesCleartextTraffic="false"
+                  android:label="EPIC"
+                  android:theme="@style/AppTheme"
+                  android:supportsRtl="true">
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:configChanges="orientation|screenSize|keyboardHidden">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN"/>
+                          <category android:name="android.intent.category.LAUNCHER"/>
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+
+          cat > app/src/main/java/com/epic/social/MainActivity.java <<'EOF'
+          package com.epic.social;
+
+          import android.app.Activity;
+          import android.os.Bundle;
+          import android.webkit.WebChromeClient;
+          import android.webkit.WebSettings;
+          import android.webkit.WebView;
+          import android.webkit.WebViewClient;
+
+          public class MainActivity extends Activity {
+              private WebView webView;
+
+              @Override
+              protected void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+
+                  webView = new WebView(this);
+                  webView.setBackgroundColor(0xFFFFFFFF);
+
+                  WebSettings settings = webView.getSettings();
+                  settings.setJavaScriptEnabled(true);
+                  settings.setDomStorageEnabled(true);
+                  settings.setDatabaseEnabled(true);
+                  settings.setMediaPlaybackRequiresUserGesture(false);
+                  settings.setAllowFileAccess(true);
+                  settings.setAllowContentAccess(true);
+
+                  webView.setWebViewClient(new WebViewClient());
+                  webView.setWebChromeClient(new WebChromeClient());
+
+                  setContentView(webView);
+                  webView.loadUrl("file:///android_asset/index.html");
+              }
+
+              @Override
+              public void onBackPressed() {
+                  if (webView != null && webView.canGoBack()) {
+                      webView.goBack();
+                  } else {
+                      super.onBackPressed();
+                  }
+              }
+
+              @Override
+              protected void onDestroy() {
+                  if (webView != null) {
+                      webView.destroy();
+                  }
+                  super.onDestroy();
+              }
+          }
+          EOF
+
+          cat > app/src/main/assets/config.json <<EOF
+          {
+            "supabaseUrl": "${SUPABASE_URL:-}",
+            "supabaseKey": "${SUPABASE_PUBLISHABLE_KEY:-}"
+          }
+          EOF
+
+          cat > app/src/main/assets/index.html <<'EOF'
+          <!DOCTYPE html>
+          <html lang="en">
+          <head>
+          <meta charset="UTF-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+          <meta name="theme-color" content="#ffffff">
+          <title>EPIC</title>
+          <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+          <style>
+          :root {
+            --blue:#1877f2;
+            --background:#f0f2f5;
+            --white:#fff;
+            --text:#1c1e21;
+            --muted:#65676b;
+            --border:#e4e6eb;
+          }
+          *{box-sizing:border-box}
+          body{margin:0;font-family:Arial,Helvetica,sans-serif;background:var(--background);color:var(--text)}
+          button,input,textarea{font:inherit}
+          button{cursor:pointer}
+          .hidden{display:none!important}
+          .topbar{height:58px;background:#fff;display:flex;align-items:center;justify-content:space-between;padding:0 12px;border-bottom:1px solid var(--border);position:sticky;top:0;z-index:20}
+          .logo{color:var(--blue);font-size:30px;font-weight:800;letter-spacing:-1.5px}
+          .top-actions{display:flex;gap:8px}
+          .round-button{width:40px;height:40px;border:0;border-radius:50%;background:#e4e6eb;font-size:20px}
+          .tabs{display:flex;justify-content:space-around;background:#fff;border-bottom:1px solid var(--border);position:sticky;top:58px;z-index:19}
+          .tab{border:0;background:transparent;color:var(--muted);flex:1;height:48px;font-size:21px;border-bottom:3px solid transparent}
+          .tab.active{color:var(--blue);border-bottom-color:var(--blue)}
+          .page{display:none;max-width:720px;margin:0 auto;padding:12px}
+          .page.active{display:block}
+          .card{background:#fff;border-radius:12px;padding:14px;margin-bottom:12px;box-shadow:0 1px 2px #0000000d}
+          .auth-wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}
+          .auth-card{width:100%;max-width:420px;background:#fff;border-radius:16px;padding:24px;box-shadow:0 5px 24px #00000012}
+          .auth-logo{text-align:center;font-size:46px;font-weight:900;color:var(--blue);margin-bottom:4px}
+          .subtitle{text-align:center;color:var(--muted);line-height:1.4;margin-bottom:22px}
+          .field{width:100%;border:1px solid #ccd0d5;border-radius:9px;padding:13px;margin:6px 0;background:#fff;outline-color:var(--blue)}
+          .primary{width:100%;border:0;background:var(--blue);color:#fff;border-radius:9px;padding:13px;font-weight:700;margin-top:8px}
+          .secondary{border:0;background:#e7f3ff;color:var(--blue);padding:10px 13px;border-radius:8px;font-weight:700}
+          .text-button{border:0;background:transparent;color:var(--blue);padding:12px 4px;font-weight:700}
+          .divider{height:1px;background:var(--border);margin:15px 0}
+          .row{display:flex;align-items:center;gap:10px}
+          .spread{justify-content:space-between}
+          .avatar{width:42px;height:42px;border-radius:50%;background:#dbeafe;color:var(--blue);display:flex;align-items:center;justify-content:center;font-weight:800;flex-shrink:0;overflow:hidden}
+          .muted{color:var(--muted);font-size:13px}
+          .post-content{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.45;margin:12px 0}
+          .post-image{width:100%;max-height:500px;object-fit:contain;border-radius:8px;background:#f0f2f5}
+          .post-actions{display:flex;gap:5px;margin-top:10px}
+          .post-actions button{flex:1;border:0;background:transparent;padding:10px 3px;color:var(--muted);border-radius:7px}
+          .post-actions .liked{color:var(--blue);font-weight:700}
+          .section-title{font-size:21px;margin:8px 0 14px}
+          .status-message{margin:10px 0;padding:10px;background:#e7f3ff;color:#084298;border-radius:8px;overflow-wrap:anywhere}
+          .danger{background:#ffe8e8;color:#b42318}
+          .list-item{display:flex;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid var(--border)}
+          .item-body{flex:1;min-width:0}
+          .item-body p{margin:5px 0;overflow-wrap:anywhere}
+          .menu-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+          .menu-tile{padding:18px 8px;border:1px solid var(--border);border-radius:10px;background:#fff;text-align:center;font-weight:700}
+          .comment-box{border-top:1px solid var(--border);margin-top:8px;padding-top:8px}
+          .reels-page{padding:0;max-width:600px}
+          .reel-card{position:relative;height:75vh;min-height:420px;margin:10px 0;background:#080808;border-radius:12px;overflow:hidden;color:#fff}
+          .reel-video{width:100%;height:100%;object-fit:contain;background:#080808}
+          .reel-overlay{position:absolute;inset:auto 10px 14px;pointer-events:none;text-shadow:0 1px 4px #000}
+          .reel-actions{position:absolute;right:10px;bottom:70px;display:flex;flex-direction:column;gap:14px}
+          .reel-actions button{background:#0008;color:white;border:0;border-radius:50%;padding:10px}
+          @media(max-width:420px){.page{padding:8px}.reels-page{padding:0}.reel-card{border-radius:0}.logo{font-size:27px}}
+          </style>
+          </head>
+          <body>
+          <div id="authScreen" class="auth-wrap">
+            <div class="auth-card">
+              <div class="auth-logo">epic</div>
+              <div class="subtitle">Connect with friends and the world around you.</div>
+              <div id="authMessage" class="status-message hidden"></div>
+              <form id="loginForm">
+                <input id="loginEmail" class="field" type="email" placeholder="Email address" autocomplete="email" required>
+                <input id="loginPassword" class="field" type="password" placeholder="Password" autocomplete="current-password" required>
+                <button class="primary" type="submit">Log in</button>
+              </form>
+              <div class="divider"></div>
+              <button id="showRegister" class="primary" style="background:#42b72a">Create new account</button>
+              <form id="registerForm" class="hidden">
+                <input id="registerName" class="field" placeholder="Full name" maxlength="80" required>
+                <input id="registerUsername" class="field" placeholder="Username" maxlength="30" required>
+                <input id="registerEmail" class="field" type="email" placeholder="Email address" required>
+                <input id="registerPassword" class="field" type="password" placeholder="Password (at least 8 characters)" minlength="8" required>
+                <button class="primary" type="submit">Create account</button>
+                <button id="showLogin" class="text-button" type="button">Already have an account? Log in</button>
+              </form>
+            </div>
+          </div>
+
+          <div id="appScreen" class="hidden">
+            <header class="topbar">
+              <div class="logo">epic</div>
+              <div class="top-actions">
+                <button id="searchButton" class="round-button" aria-label="Search">⌕</button>
+                <button id="createButton" class="round-button" aria-label="Create post">＋</button>
+                <button id="menuButton" class="round-button" aria-label="Menu">☰</button>
+              </div>
+            </header>
+            <nav class="tabs">
+              <button class="tab active" data-page="home">⌂</button>
+              <button class="tab" data-page="friends">♧</button>
+              <button class="tab" data-page="messenger">☏</button>
+              <button class="tab" data-page="reels">▶</button>
+              <button class="tab" data-page="notifications">♧</button>
+              <button class="tab" data-page="marketplace">▦</button>
+            </nav>
+            <main>
+              <section id="page-home" class="page active">
+                <div class="card">
+                  <div class="row">
+                    <div id="myAvatar" class="avatar">E</div>
+                    <button id="openPostComposer" class="field" style="text-align:left;margin:0;border-radius:24px">What's on your mind?</button>
+                  </div>
+                  <div class="divider"></div>
+                  <div class="row spread">
+                    <button id="quickPhoto" class="text-button">▧ Photo / video</button>
+                    <button id="quickReel" class="text-button">▶ Create reel</button>
+                  </div>
+                </div>
+                <div id="postComposer" class="card hidden">
+                  <h3>Create post</h3>
+                  <textarea id="postText" class="field" rows="4" placeholder="What's on your mind?"></textarea>
+                  <input id="postImageUrl" class="field" type="url" placeholder="Image or video URL (optional)">
+                  <button id="publishPost" class="primary">Post</button>
+                  <button id="cancelPost" class="text-button">Cancel</button>
+                </div>
+                <div id="feedMessage" class="status-message hidden"></div>
+                <div id="feed"></div>
+              </section>
+
+              <section id="page-friends" class="page">
+                <h2 class="section-title">Friends</h2>
+                <div class="card">
+                  <input id="friendSearch" class="field" placeholder="Find people by username or name">
+                  <button id="findFriends" class="primary">Search people</button>
+                </div>
+                <div id="friendResults" class="card"></div>
+                <h3>Friend requests</h3><div id="friendRequests" class="card"></div>
+                <h3>Friends list</h3><div id="friendsList" class="card"></div>
+              </section>
+
+              <section id="page-messenger" class="page">
+                <h2 class="section-title">Messenger</h2>
+                <div class="card">
+                  <input id="messageRecipient" class="field" placeholder="Recipient's username">
+                  <button id="startConversation" class="primary">Open conversation</button>
+                </div>
+                <div id="conversation" class="card">Search for a username to start a conversation.</div>
+              </section>
+
+              <section id="page-reels" class="page reels-page">
+                <div class="card" style="margin:12px">
+                  <h2>Reels</h2>
+                  <p class="muted">Use a direct, publicly accessible MP4 or WebM URL.</p>
+                  <input id="videoUrl" class="field" type="url" placeholder="Direct video URL">
+                  <input id="videoCaption" class="field" maxlength="500" placeholder="Write a caption">
+                  <button id="publishVideo" class="primary">Publish reel</button>
+                  <div id="reelMessage" class="status-message hidden"></div>
+                </div>
+                <div id="videos"></div>
+              </section>
+
+              <section id="page-notifications" class="page">
+                <h2 class="section-title">Notifications</h2><div id="notificationsList" class="card"></div>
+              </section>
+
+              <section id="page-marketplace" class="page">
+                <h2 class="section-title">Marketplace</h2>
+                <div class="card">
+                  <h3>Create a listing</h3>
+                  <input id="marketTitle" class="field" placeholder="Item name" maxlength="120">
+                  <input id="marketPrice" class="field" type="number" min="0" step="0.01" placeholder="Price">
+                  <input id="marketImage" class="field" type="url" placeholder="Image URL (optional)">
+                  <textarea id="marketDescription" class="field" rows="3" placeholder="Description"></textarea>
+                  <button id="publishListing" class="primary">Publish listing</button>
+                  <div id="marketMessage" class="status-message hidden"></div>
+                </div>
+                <div id="marketListings"></div>
+              </section>
+
+              <section id="page-profile" class="page">
+                <h2 class="section-title">Your profile</h2>
+                <div class="card">
+                  <input id="profileName" class="field" placeholder="Full name">
+                  <input id="profileUsername" class="field" placeholder="Username">
+                  <input id="profileAvatar" class="field" type="url" placeholder="Avatar image URL">
+                  <textarea id="profileBio" class="field" rows="3" placeholder="Bio"></textarea>
+                  <button id="saveProfile" class="primary">Save profile</button>
+                  <div id="profileMessage" class="status-message hidden"></div>
+                </div>
+                <div class="card"><button id="logoutButton" class="primary danger">Log out</button></div>
+              </section>
+
+              <section id="page-menu" class="page">
+                <h2 class="section-title">Menu</h2>
+                <div class="card menu-grid">
+                  <button class="menu-tile" data-goto="home">⌂<br>Home</button>
+                  <button class="menu-tile" data-goto="friends">♧<br>Friends</button>
+                  <button class="menu-tile" data-goto="messenger">☏<br>Messenger</button>
+                  <button class="menu-tile" data-goto="reels">▶<br>Reels</button>
+                  <button class="menu-tile" data-goto="notifications">♧<br>Notifications</button>
+                  <button class="menu-tile" data-goto="marketplace">▦<br>Marketplace</button>
+                  <button class="menu-tile" data-goto="profile">👤<br>Profile</button>
+                </div>
+                <div class="card"><button id="menuLogout" class="primary danger">Log out</button></div>
+              </section>
+
+              <section id="page-search" class="page">
+                <h2 class="section-title">Search EPIC</h2>
+                <div class="card">
+                  <input id="globalSearch" class="field" placeholder="Search people">
+                  <button id="globalSearchButton" class="primary">Search</button>
+                </div>
+                <div id="globalSearchResults" class="card"></div>
+              </section>
+            </main>
+          </div>
+
+          <script>
+          let supabaseClient=null,currentUser=null,currentProfile=null,activeConversationUser=null,messagePollTimer=null;
+          const $=id=>document.getElementById(id);
+
+          function showMessage(id,message,error=false){
+            const el=$(id);if(!el)return;
+            el.textContent=message;el.classList.remove("hidden","danger");
+            if(error)el.classList.add("danger");
+          }
+          function hideMessage(id){$(id)?.classList.add("hidden")}
+          function escapeHtml(value){
+            return String(value??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[c]));
+          }
+          function safeUrl(value){
+            try{const u=new URL(value);if(["https:","http:"].includes(u.protocol))return u.href}catch(_){}
+            return "";
+          }
+          function formatDate(value){
+            if(!value)return "";
+            const d=new Date(value);return Number.isNaN(d.getTime())?"":d.toLocaleString();
+          }
+          function shortId(value){return String(value||"").replace(/[^a-zA-Z0-9_-]/g,"").slice(0,80)}
+
+          async function initialise(){
+            try{
+              const response=await fetch("config.json");
+              if(!response.ok)throw new Error("Could not read Supabase configuration.");
+              const config=await response.json();
+              if(!config.supabaseUrl||!config.supabaseKey)throw new Error("Add SUPABASE_URL and SUPABASE_PUBLISHABLE_KEY in GitHub Secrets.");
+              if(!window.supabase)throw new Error("Supabase library could not load. Check your internet connection.");
+              supabaseClient=window.supabase.createClient(config.supabaseUrl,config.supabaseKey);
+              const {data,error}=await supabaseClient.auth.getSession();
+              if(error)throw error;
+              if(data.session){currentUser=data.session.user;await enterApp()}
+            }catch(error){showMessage("authMessage",error.message||"Could not initialise EPIC.",true)}
+          }
+
+          function switchAuthForm(register){
+            $("loginForm").classList.toggle("hidden",register);
+            $("registerForm").classList.toggle("hidden",!register);
+            hideMessage("authMessage");
+          }
+          $("showRegister").addEventListener("click",()=>switchAuthForm(true));
+          $("showLogin").addEventListener("click",()=>switchAuthForm(false));
+
+          $("registerForm").addEventListener("submit",async event=>{
+            event.preventDefault();
+            if(!supabaseClient)return showMessage("authMessage","App is still loading.",true);
+            const fullName=$("registerName").value.trim();
+            const username=$("registerUsername").value.trim().replace(/^@/,"");
+            const email=$("registerEmail").value.trim();
+            const password=$("registerPassword").value;
+            if(!/^[a-zA-Z0-9_.]{3,30}$/.test(username))return showMessage("authMessage","Username must be 3–30 letters, numbers, dots or underscores.",true);
+            showMessage("authMessage","Creating your account…");
+            try{
+              const {data,error}=await supabaseClient.auth.signUp({email,password,options:{data:{full_name:fullName,username}}});
+              if(error)throw error;
+              if(data.session){currentUser=data.user;await enterApp()}
+              else{switchAuthForm(false);showMessage("authMessage","Account created. Check your email to verify your account, then log in.")}
+            }catch(error){showMessage("authMessage",error.message||"Registration failed.",true)}
+          });
+
+          $("loginForm").addEventListener("submit",async event=>{
+            event.preventDefault();
+            if(!supabaseClient)return showMessage("authMessage","App is still loading.",true);
+            showMessage("authMessage","Logging in…");
+            try{
+              const {data,error}=await supabaseClient.auth.signInWithPassword({email:$("loginEmail").value.trim(),password:$("loginPassword").value});
+              if(error)throw error;
+              currentUser=data.user;await enterApp();
+            }catch(error){showMessage("authMessage",error.message||"Login failed.",true)}
+          });
+
+          async function enterApp(){
+            $("authScreen").classList.add("hidden");$("appScreen").classList.remove("hidden");
+            await loadProfile();await loadFeed();await loadFriendRequests();await loadFriends();await loadNotifications();await loadMarketplace();
+            showPage("home");
+          }
+
+          async function loadProfile(){
+            if(!currentUser)return;
+            try{
+              const {data,error}=await supabaseClient.from("profiles").select("*").eq("id",currentUser.id).maybeSingle();
+              if(error)throw error;
+              currentProfile=data;
+              if(!data){
+                const m=currentUser.user_metadata||{};
+                const username=m.username||(currentUser.email||"user").split("@")[0];
+                const {data:inserted,error:insertError}=await supabaseClient.from("profiles").upsert({id:currentUser.id,username,full_name:m.full_name||username},{onConflict:"id"}).select().maybeSingle();
+                if(!insertError)currentProfile=inserted;
+              }
+              $("profileName").value=currentProfile?.full_name||"";
+              $("profileUsername").value=currentProfile?.username||"";
+              $("profileAvatar").value=currentProfile?.avatar_url||"";
+              $("profileBio").value=currentProfile?.bio||"";
+              $("myAvatar").textContent=(currentProfile?.full_name||"E").charAt(0).toUpperCase();
+            }catch(error){console.error("Profile load error:",error)}
+          }
+
+          $("saveProfile").addEventListener("click",async()=>{
+            if(!currentUser)return;
+            const username=$("profileUsername").value.trim().replace(/^@/,"");
+            if(!/^[a-zA-Z0-9_.]{3,30}$/.test(username))return showMessage("profileMessage","Username must be 3–30 letters, numbers, dots or underscores.",true);
+            try{
+              const {data,error}=await supabaseClient.from("profiles").upsert({
+                id:currentUser.id,full_name:$("profileName").value.trim(),username,
+                avatar_url:safeUrl($("profileAvatar").value.trim())||null,bio:$("profileBio").value.trim()
+              },{onConflict:"id"}).select().single();
+              if(error)throw error;
+              currentProfile=data;await loadProfile();showMessage("profileMessage","Profile updated.");
+            }catch(error){showMessage("profileMessage",error.message||"Could not save profile.",true)}
+          });
+
+          function showPage(page){
+            document.querySelectorAll(".page").forEach(s=>s.classList.remove("active"));
+            document.querySelectorAll(".tab").forEach(t=>t.classList.remove("active"));
+            $("page-"+page)?.classList.add("active");
+            document.querySelector(`.tab[data-page="${page}"]`)?.classList.add("active");
+            if(page==="home")loadFeed();
+            if(page==="friends"){loadFriendRequests();loadFriends()}
+            if(page==="notifications")loadNotifications();
+            if(page==="marketplace")loadMarketplace();
+            if(page==="reels")loadVideos();
+            if(page==="profile")loadProfile();
+            if(page!=="messenger"&&messagePollTimer){clearInterval(messagePollTimer);messagePollTimer=null}
+          }
+          document.querySelectorAll(".tab").forEach(t=>t.addEventListener("click",()=>showPage(t.dataset.page)));
+          document.querySelectorAll("[data-goto]").forEach(b=>b.addEventListener("click",()=>showPage(b.dataset.goto)));
+          $("menuButton").addEventListener("click",()=>showPage("menu"));
+          $("searchButton").addEventListener("click",()=>showPage("search"));
+          $("createButton").addEventListener("click",()=>{showPage("home");$("postComposer").classList.remove("hidden")});
+          $("openPostComposer").addEventListener("click",()=>$("postComposer").classList.remove("hidden"));
+          $("cancelPost").addEventListener("click",()=>$("postComposer").classList.add("hidden"));
+          $("quickPhoto").addEventListener("click",()=>{showPage("home");$("postComposer").classList.remove("hidden");$("postImageUrl").focus()});
+          $("quickReel").addEventListener("click",()=>{showPage("reels");$("videoUrl").focus()});
+
+          $("publishPost").addEventListener("click",async()=>{
+            if(!currentUser)return;
+            const content=$("postText").value.trim(),imageUrl=safeUrl($("postImageUrl").value.trim());
+            if(!content&&!imageUrl)return showMessage("feedMessage","Write something or add an image URL.",true);
+            try{
+              const {error}=await supabaseClient.from("posts").insert({user_id:currentUser.id,content:content||"",image_url:imageUrl||null});
+              if(error)throw error;
+              $("postText").value="";$("postImageUrl").value="";$("postComposer").classList.add("hidden");hideMessage("feedMessage");await loadFeed();
+            }catch(error){showMessage("feedMessage",error.message||"Could not publish post.",true)}
+          });
+
+          async function loadFeed(){
+            if(!currentUser)return;
+            const feed=$("feed");feed.innerHTML='<div class="card">Loading posts…</div>';
+            try{
+              const {data:posts,error}=await supabaseClient.from("posts").select("*").order("created_at",{ascending:false}).limit(50);
+              if(error)throw error;
+              if(!posts?.length){feed.innerHTML='<div class="card">No posts yet. Be the first to share something!</div>';return}
+              const ids=[...new Set(posts.map(p=>p.user_id).filter(Boolean))];
+              let profiles=[];
+              if(ids.length){const r=await supabaseClient.from("profiles").select("id,username,full_name,avatar_url").in("id",ids);if(!r.error)profiles=r.data||[]}
+              const map=Object.fromEntries(profiles.map(p=>[p.id,p]));
+              feed.innerHTML=posts.map(post=>{
+                const p=map[post.user_id]||{},id=shortId(post.id),url=safeUrl(post.image_url||"");
+                const video=/\.(mp4|webm|m4v)(?:[?#].*)?$/i.test(url);
+                return `<div class="card">
+                  <div class="row"><div class="avatar">${escapeHtml((p.full_name||p.username||"E").charAt(0).toUpperCase())}</div>
+                  <div><strong>${escapeHtml(p.full_name||p.username||"EPIC user")}</strong><div class="muted">@${escapeHtml(p.username||"user")} · ${escapeHtml(formatDate(post.created_at))}</div></div></div>
+                  ${post.content?`<div class="post-content">${escapeHtml(post.content)}</div>`:""}
+                  ${url?(video?`<video class="post-image" src="${escapeHtml(url)}" controls playsinline preload="metadata"></video>`:`<img class="post-image" src="${escapeHtml(url)}" alt="Post image" loading="lazy">`):""}
+                  <div class="row spread muted"><span id="like-count-${id}">Likes</span><span id="comment-count-${id}">Comments</span></div>
+                  <div class="post-actions"><button data-like data-post-id="${escapeHtml(post.id)}">♡ Like</button><button data-comment data-post-id="${escapeHtml(post.id)}">▢ Comment</button><button data-share data-post-id="${escapeHtml(post.id)}">↗ Share</button></div>
+                  <div id="comments-${id}" class="comment-box hidden"></div>
+                </div>`;
+              }).join("");
+              await Promise.all(posts.map(loadPostStats));attachFeedActions();
+            }catch(error){feed.innerHTML=`<div class="card">Could not load feed: ${escapeHtml(error.message||"Unknown error")}</div>`}
+          }
+
+          async function loadPostStats(post){
+            const id=shortId(post.id);
+            try{
+              const {count,error}=await supabaseClient.from("post_likes").select("*",{count:"exact",head:true}).eq("post_id",post.id);
+              if(!error&&$("like-count-"+id))$("like-count-"+id).textContent=`${count||0} likes`;
+              const {data}=await supabaseClient.from("post_likes").select("post_id").eq("post_id",post.id).eq("user_id",currentUser.id).maybeSingle();
+              const button=document.querySelector(`[data-like][data-post-id="${post.id}"]`);
+              if(data&&button){button.classList.add("liked");button.textContent="♥ Liked"}
+              const c=await supabaseClient.from("comments").select("*",{count:"exact",head:true}).eq("post_id",post.id);
+              if(!c.error&&$("comment-count-"+id))$("comment-count-"+id).textContent=`${c.count||0} comments`;
+            }catch(error){console.warn("Post stats unavailable:",error)}
+          }
+
+          function attachFeedActions(){
+            document.querySelectorAll("[data-like]").forEach(button=>button.onclick=async()=>{
+              const postId=button.dataset.postId,liked=button.classList.contains("liked");
+              try{
+                if(liked){
+                  const {error}=await supabaseClient.from("post_likes").delete().eq("post_id",postId).eq("user_id",currentUser.id);if(error)throw error;
+                  button.classList.remove("liked");button.textContent="♡ Like";
+                }else{
+                  const {error}=await supabaseClient.from("post_likes").upsert({post_id:postId,user_id:currentUser.id},{onConflict:"post_id,user_id"});if(error)throw error;
+                  button.classList.add("liked");button.textContent="♥ Liked";
+                }
+                const r=await supabaseClient.from("post_likes").select("*",{count:"exact",head:true}).eq("post_id",postId);
+                if(!r.error&&$("like-count-"+shortId(postId)))$("like-count-"+shortId(postId)).textContent=`${r.count||0} likes`;
+              }catch(error){alert(error.message||"Could not update like.")}
+            });
+            document.querySelectorAll("[data-comment]").forEach(button=>button.onclick=async()=>{
+              const postId=button.dataset.postId,box=$("comments-"+shortId(postId));
+              box.classList.toggle("hidden");if(!box.classList.contains("hidden"))await loadComments(postId,box);
+            });
+            document.querySelectorAll("[data-share]").forEach(button=>button.onclick=async()=>{
+              const text="Check out this post on EPIC: "+button.dataset.postId;
+              try{if(navigator.share)await navigator.share({title:"EPIC post",text});else if(navigator.clipboard){await navigator.clipboard.writeText(text);alert("Post reference copied.")}else prompt("Copy post reference:",text)}catch(_){}
+            });
+          }
+
+          async function loadComments(postId,container){
+            container.innerHTML='<form class="comment-form"><input class="field" name="comment" placeholder="Write a comment" required><button class="primary">Send comment</button></form><div class="comments-list">Loading comments…</div>';
+            container.querySelector(".comment-form").addEventListener("submit",async event=>{
+              event.preventDefault();const input=event.currentTarget.elements.comment,content=input.value.trim();if(!content)return;
+              try{const {error}=await supabaseClient.from("comments").insert({post_id:postId,user_id:currentUser.id,content});if(error)throw error;await loadComments(postId,container)}
+              catch(error){alert("Could not comment: "+(error.message||"Unknown error"))}
+            });
+            const list=container.querySelector(".comments-list");
+            try{
+              const {data,error}=await supabaseClient.from("comments").select("*").eq("post_id",postId).order("created_at",{ascending:true}).limit(100);
+              if(error)throw error;
+              if(!data?.length){list.innerHTML='<p class="muted">No comments yet.</p>';return}
+              const ids=[...new Set(data.map(c=>c.user_id).filter(Boolean))];let profiles=[];
+              if(ids.length){const r=await supabaseClient.from("profiles").select("id,username,full_name").in("id",ids);if(!r.error)profiles=r.data||[]}
+              const map=Object.fromEntries(profiles.map(p=>[p.id,p]));
+              list.innerHTML=data.map(c=>`<div class="comment"><strong>${escapeHtml(map[c.user_id]?.full_name||map[c.user_id]?.username||"User")}</strong> ${escapeHtml(c.content||"")}</div>`).join("");
+            }catch(error){list.textContent="Comments could not be loaded: "+(error.message||"")}
+          }
+
+          $("publishVideo").addEventListener("click",async()=>{
+            if(!currentUser)return showMessage("reelMessage","Log in to publish a reel.",true);
+            const url=safeUrl($("videoUrl").value.trim()),caption=$("videoCaption").value.trim();
+            if(!url||!/\.(mp4|webm|m4v)(?:[?#].*)?$/i.test(url))return showMessage("reelMessage","Enter a direct MP4, WebM or M4V video URL.",true);
+            showMessage("reelMessage","Publishing reel…");
+            try{
+              const {error}=await supabaseClient.from("posts").insert({user_id:currentUser.id,content:caption,image_url:url});
+              if(error)throw error;
+              $("videoUrl").value="";$("videoCaption").value="";showMessage("reelMessage","Reel published.");await loadVideos();
+            }catch(error){showMessage("reelMessage",error.message||"Could not publish reel.",true)}
+          });
+
+          async function loadVideos(){
+            if(!currentUser)return;
+            const box=$("videos");box.innerHTML='<div class="card">Loading reels…</div>';
+            try{
+              const {data,error}=await supabaseClient.from("posts").select("*").not("image_url","is",null).order("created_at",{ascending:false}).limit(100);
+              if(error)throw error;
+              const videos=(data||[]).filter(p=>/\.(mp4|webm|m4v)(?:[?#].*)?$/i.test(safeUrl(p.image_url||"")));
+              if(!videos.length){box.innerHTML='<div class="card">No reels yet. Publish a video using the form above.</div>';return}
+              const ids=[...new Set(videos.map(p=>p.user_id).filter(Boolean))];let profiles=[];
+              if(ids.length){const r=await supabaseClient.from("profiles").select("id,username,full_name").in("id",ids);if(!r.error)profiles=r.data||[]}
+              const map=Object.fromEntries(profiles.map(p=>[p.id,p]));
+              box.innerHTML=videos.map(p=>`<div class="reel-card"><video class="reel-video" src="${escapeHtml(safeUrl(p.image_url))}" controls playsinline preload="metadata"></video><div class="reel-overlay"><strong>${escapeHtml(map[p.user_id]?.full_name||map[p.user_id]?.username||"EPIC user")}</strong><div>${escapeHtml(p.content||"")}</div></div></div>`).join("");
+            }catch(error){box.innerHTML=`<div class="card">Could not load reels: ${escapeHtml(error.message||"")}</div>`}
+          }
+
+          async function findPeople(inputId,resultsId){
+            const query=$(inputId).value.trim().replace(/^@/,""),box=$(resultsId);
+            if(!query){box.textContent="Enter a name or username to search.";return}
+            box.textContent="Searching…";
+            try{
+              const {data,error}=await supabaseClient.from("profiles").select("id,username,full_name").or(`username.ilike.%${query}%,full_name.ilike.%${query}%`).neq("id",currentUser.id).limit(30);
+              if(error)throw error;
+              if(!data?.length){box.textContent="No people found.";return}
+              box.innerHTML=data.map(p=>`<div class="list-item"><div class="item-body"><strong>${escapeHtml(p.full_name||p.username||"User")}</strong><p class="muted">@${escapeHtml(p.username||"")}</p></div><button class="secondary" data-add-friend="${escapeHtml(p.id)}">Add</button><button class="secondary" data-message-user="${escapeHtml(p.id)}" data-message-username="${escapeHtml(p.username||"")}">Message</button></div>`).join("");
+              box.querySelectorAll("[data-add-friend]").forEach(b=>b.onclick=()=>sendFriendRequest(b.dataset.addFriend,b));
+              box.querySelectorAll("[data-message-user]").forEach(b=>b.onclick=()=>openConversation(b.dataset.messageUser,b.dataset.messageUsername));
+            }catch(error){box.textContent="Search failed: "+(error.message||"Unknown error")}
+          }
+          $("findFriends").addEventListener("click",()=>findPeople("friendSearch","friendResults"));
+          $("globalSearchButton").addEventListener("click",()=>findPeople("globalSearch","globalSearchResults"));
+
+          async function sendFriendRequest(receiverId,button){
+            if(!currentUser||receiverId===currentUser.id)return;
+            try{
+              const {data:existing,error:lookupError}=await supabaseClient.from("friend_requests").select("id,status").eq("sender_id",currentUser.id).eq("receiver_id",receiverId).maybeSingle();
+              if(lookupError)throw lookupError;
+              if(existing){button.textContent=existing.status==="accepted"?"Friends":"Requested";button.disabled=true;return}
+              const {error}=await supabaseClient.from("friend_requests").insert({sender_id:currentUser.id,receiver_id:receiverId,status:"pending"});
+              if(error)throw error;button.textContent="Requested";button.disabled=true;
+            }catch(error){alert(error.message||"Could not send friend request.")}
+          }
+
+          async function loadFriendRequests(){
+            if(!currentUser)return;const box=$("friendRequests");box.textContent="Loading requests…";
+            try{
+              const {data,error}=await supabaseClient.from("friend_requests").select("*").eq("receiver_id",currentUser.id).eq("status","pending").order("created_at",{ascending:false});
+              if(error)throw error;if(!data?.length){box.textContent="No pending requests.";return}
+              const ids=data.map(x=>x.sender_id),r=await supabaseClient.from("profiles").select("id,username,full_name").in("id",ids),map=Object.fromEntries((r.data||[]).map(p=>[p.id,p]));
+              box.innerHTML=data.map(x=>`<div class="list-item"><div class="item-body"><strong>${escapeHtml(map[x.sender_id]?.full_name||map[x.sender_id]?.username||"User")}</strong></div><button class="secondary" data-accept="${escapeHtml(x.id)}">Accept</button></div>`).join("");
+              box.querySelectorAll("[data-accept]").forEach(b=>b.onclick=async()=>{try{const {error}=await supabaseClient.from("friend_requests").update({status:"accepted"}).eq("id",b.dataset.accept).eq("receiver_id",currentUser.id);if(error)throw error;await loadFriendRequests();await loadFriends()}catch(error){alert(error.message||"Could not accept request.")}});
+            }catch(error){box.textContent="Could not load requests: "+(error.message||"")}
+          }
+
+          async function loadFriends(){
+            if(!currentUser)return;const box=$("friendsList");box.textContent="Loading friends…";
+            try{
+              const {data,error}=await supabaseClient.from("friend_requests").select("*").eq("status","accepted").or(`sender_id.eq.${currentUser.id},receiver_id.eq.${currentUser.id}`).limit(200);
+              if(error)throw error;
+              const ids=[...new Set((data||[]).map(x=>x.sender_id===currentUser.id?x.receiver_id:x.sender_id))];
+              if(!ids.length){box.textContent="Your friends will appear here.";return}
+              const r=await supabaseClient.from("profiles").select("id,username,full_name").in("id",ids);if(r.error)throw r.error;
+              box.innerHTML=(r.data||[]).map(p=>`<div class="list-item"><div class="item-body"><strong>${escapeHtml(p.full_name||p.username||"User")}</strong><p class="muted">@${escapeHtml(p.username||"")}</p></div><button class="secondary" data-message-user="${escapeHtml(p.id)}" data-message-username="${escapeHtml(p.username||"")}">Message</button></div>`).join("");
+              box.querySelectorAll("[data-message-user]").forEach(b=>b.onclick=()=>openConversation(b.dataset.messageUser,b.dataset.messageUsername));
+            }catch(error){box.textContent="Could not load friends: "+(error.message||"")}
+          }
+
+          $("startConversation").addEventListener("click",async()=>{
+            const username=$("messageRecipient").value.trim().replace(/^@/,"");if(!username)return;
+            try{
+              const {data,error}=await supabaseClient.from("profiles").select("id,username,full_name").eq("username",username).maybeSingle();
+              if(error)throw error;if(!data){alert("User not found.");return}await openConversation(data.id,data.username);
+            }catch(error){alert(error.message||"Could not find user.")}
+          });
+
+          async function openConversation(userId,username){
+            if(!userId||userId===currentUser.id)return;
+            activeConversationUser={id:userId,username};showPage("messenger");await loadConversation();
+            if(messagePollTimer)clearInterval(messagePollTimer);
+            messagePollTimer=setInterval(()=>{if(activeConversationUser&&$("page-messenger").classList.contains("active"))loadConversation()},8000);
+          }
+
+          async function loadConversation(){
+            if(!activeConversationUser||!currentUser)return;
+            const box=$("conversation");
+            box.innerHTML=`<h3>Chat with @${escapeHtml(activeConversationUser.username||"user")}</h3><div id="messageList" style="max-height:45vh;overflow:auto"></div><form id="messageForm" class="row"><input class="field" name="message" placeholder="Write a message" required><button class="primary" style="width:auto">Send</button></form>`;
+            const form=$("messageForm");
+            form.addEventListener("submit",async event=>{
+              event.preventDefault();const input=form.elements.message,content=input.value.trim();if(!content)return;
+              try{const {error}=await supabaseClient.from("messages").insert({sender_id:currentUser.id,receiver_id:activeConversationUser.id,content});if(error)throw error;input.value="";await loadConversation()}
+              catch(error){alert("Could not send message: "+(error.message||"Unknown error"))}
+            });
+            const list=$("messageList");list.innerHTML='<p class="muted">Loading messages…</p>';
+            try{
+              const {data,error}=await supabaseClient.from("messages").select("*").or(`and(sender_id.eq.${currentUser.id},receiver_id.eq.${activeConversationUser.id}),and(sender_id.eq.${activeConversationUser.id},receiver_id.eq.${currentUser.id})`).order("created_at",{ascending:true}).limit(200);
+              if(error)throw error;
+              list.innerHTML=(data||[]).map(m=>{const mine=m.sender_id===currentUser.id;return `<div style="display:flex;justify-content:${mine?"flex-end":"flex-start"};margin:8px 0"><div style="background:${mine?"#dbeafe":"#e4e6eb"};padding:9px 12px;border-radius:12px;max-width:85%;overflow-wrap:anywhere">${escapeHtml(m.content||"")}<div class="muted">${escapeHtml(formatDate(m.created_at))}</div></div></div>`}).join("")||'<p class="muted">No messages yet. Say hello!</p>';
+              list.scrollTop=list.scrollHeight;
+            }catch(error){list.textContent="Could not load messages: "+(error.message||"")}
+          }
+
+          async function loadNotifications(){
+            if(!currentUser)return;const box=$("notificationsList");box.textContent="Loading notifications…";
+            try{
+              const {data,error}=await supabaseClient.from("notifications").select("*").eq("user_id",currentUser.id).order("created_at",{ascending:false}).limit(100);
+              if(error)throw error;
+              box.innerHTML=data?.length?data.map(n=>`<div class="list-item"><div class="item-body">${escapeHtml(n.content||n.message||"New notification")}<div class="muted">${escapeHtml(formatDate(n.created_at))}</div></div></div>`).join(""):"You're all caught up.";
+            }catch(error){box.textContent="Could not load notifications: "+(error.message||"")}
+          }
+
+          $("publishListing").addEventListener("click",async()=>{
+            if(!currentUser)return;
+            const title=$("marketTitle").value.trim(),price=Number($("marketPrice").value),description=$("marketDescription").value.trim(),imageUrl=safeUrl($("marketImage").value.trim());
+            if(!title)return showMessage("marketMessage","Enter an item name.",true);
+            if(!Number.isFinite(price)||price<0)return showMessage("marketMessage","Enter a valid price.",true);
+            showMessage("marketMessage","Publishing listing…");
+            try{
+              const {error}=await supabaseClient.from("marketplace_listings").insert({user_id:currentUser.id,title,price,description,image_url:imageUrl||null});
+              if(error)throw error;
+              $("marketTitle").value="";$("marketPrice").value="";$("marketDescription").value="";$("marketImage").value="";
+              showMessage("marketMessage","Listing published.");await loadMarketplace();
+            }catch(error){showMessage("marketMessage",error.message||"Could not publish listing.",true)}
+          });
+
+          async function loadMarketplace(){
+            if(!currentUser)return;const box=$("marketListings");box.innerHTML='<div class="card">Loading marketplace…</div>';
+            try{
+              const {data,error}=await supabaseClient.from("marketplace_listings").select("*").order("created_at",{ascending:false}).limit(100);
+              if(error)throw error;if(!data?.length){box.innerHTML='<div class="card">No marketplace listings yet.</div>';return}
+              const ids=[...new Set(data.map(x=>x.user_id).filter(Boolean))];let profiles=[];
+              if(ids.length){const r=await supabaseClient.from("profiles").select("id,username,full_name").in("id",ids);if(!r.error)profiles=r.data||[]}
+              const map=Object.fromEntries(profiles.map(p=>[p.id,p]));
+              box.innerHTML=data.map(item=>{const url=safeUrl(item.image_url||""),p=map[item.user_id]||{};return `<div class="card">${url?`<img class="post-image" src="${escapeHtml(url)}" alt="Listing image" loading="lazy">`:""}<h3>${escapeHtml(item.title||"Item")}</h3><strong>${escapeHtml(String(item.price??""))}</strong><p>${escapeHtml(item.description||"")}</p><p class="muted">Listed by ${escapeHtml(p.full_name||p.username||"EPIC user")}</p><button class="primary" data-contact-seller="${escapeHtml(p.username||"")}">Contact seller</button></div>`}).join("");
+              box.querySelectorAll("[data-contact-seller]").forEach(b=>b.onclick=async()=>{const username=b.dataset.contactSeller;if(!username)return alert("Seller profile unavailable.");try{const {data,error}=await supabaseClient.from("profiles").select("id,username").eq("username",username).maybeSingle();if(error)throw error;if(!data)return alert("Seller not found.");await openConversation(data.id,data.username)}catch(error){alert(error.message||"Could not contact seller.")}});
+            }catch(error){box.innerHTML=`<div class="card">Could not load marketplace: ${escapeHtml(error.message||"")}</div>`}
+          }
+
+          async function logout(){
+            if(messagePollTimer)clearInterval(messagePollTimer);messagePollTimer=null;activeConversationUser=null;
+            try{if(supabaseClient){const {error}=await supabaseClient.auth.signOut();if(error)throw error}}
+            catch(error){alert(error.message||"Could not log out.");return}
+            currentUser=null;currentProfile=null;$("appScreen").classList.add("hidden");$("authScreen").classList.remove("hidden");$("loginPassword").value="";switchAuthForm(false);
+          }
+          $("logoutButton").addEventListener("click",logout);
+          $("menuLogout").addEventListener("click",logout);
+          document.addEventListener("visibilitychange",()=>{if(document.hidden)document.querySelectorAll(".reel-video").forEach(v=>v.pause())});
+          initialise();
+          </script>
+          </body>
+          </html>
+          EOF
+
+          test -s app/src/main/assets/index.html
+          test -s app/src/main/assets/config.json
+          test -s app/src/main/java/com/epic/social/MainActivity.java
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
+      - name: Build installable APK
+        run: gradle --no-daemon --stacktrace assembleDebug
+
+      - name: Verify APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="app/build/outputs/apk/debug/app-debug.apk"
+
+          if [ ! -s "$APK" ]; then
+            echo "::error::APK was not created."
+            find app/build/outputs -type f 2>/dev/null || true
+            exit 1
+          fi
+
+          echo "APK successfully created:"
+          ls -lh "$APK"
+
+      - name: Upload installable EPIC APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: EPIC-Android-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
